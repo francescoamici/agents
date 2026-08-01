@@ -1,6 +1,6 @@
 ---
 name: claudex-build
-description: Run the full multi-model feature loop in one thread - Claude plans, reviews and triages; Codex (via the codex plugin) critiques the plan and implements; dual parallel review with Codex as background edge-case grinder; optional Fable subagent for architectural work. Every run logs rework metrics to docs/reviews.md. Use when the user invokes /claudex-build, asks for "the full loop", or wants a feature built with cross-model critique, implementation and review.
+description: Run the full multi-model feature loop in one thread - Claude plans, reviews and triages; Codex (via the codex plugin) critiques the plan and implements; dual parallel review with Codex as background edge-case grinder; Fable escalation for architectural work (relaunch the loop on Fable for planning, read-only Fable subagent for high-risk review). Every run logs rework metrics to docs/reviews.md. Use when the user invokes /claudex-build, asks for "the full loop", or wants a feature built with cross-model critique, implementation and review.
 ---
 
 # Claudex Build
@@ -13,8 +13,10 @@ tracking:
 - **Codex** (via the `codex-plugin-cc` plugin commands, fallback `codex exec`):
   critiques the plan, implements, grinds edge cases in review, applies
   mechanical fixes.
-- **Fable** (subagent, `model: fable`): proposed opportunistically for
-  architectural, niche, or design-driven work.
+- **Fable** (escalation, not default): for architectural, niche, or
+  design-driven work. Planning escalates by relaunching the skill with Fable
+  as the session model; high-risk review uses a read-only Fable subagent,
+  skipped when the session already runs on Fable.
 
 Every run measures how much Claude had to rework Codex's code, so the log in
 `docs/reviews.md` eventually answers empirically whether Codex-as-implementer
@@ -67,7 +69,7 @@ Claude implements, a fresh subagent reviews.
 2. No branch by default. For medium/large or risky tasks, propose a branch and
    ask before creating it. Never create one silently.
 3. If the scope is genuinely ambiguous (materially different readings), ask
-   once now.
+   now via AskUserQuestion.
 
 ## Phase 1 — Plan (Claude)
 
@@ -75,20 +77,35 @@ Explore the codebase enough to plan concretely, then write the plan to
 `docs/plans/YYYY-MM-DD-<slug>.md` with: goal, acceptance criteria, file-level
 steps, files to leave alone, verification commands, open questions.
 
+If a plan file for this feature already exists — typically after a Fable
+escalation relaunch — pick it up and refine it instead of starting over.
+
 The bar is higher than a plan Claude would implement itself: Codex implements
 only what the plan specifies, so vague steps become vague code.
 
-**Fable rubric** — propose planning via a Fable subagent (read-only Task/Agent
-with `model: fable`) when any of these hold, or when `--high-risk` is set:
+While exploring and drafting, surface doubts instead of assuming: whenever the
+goal, the scope, or a design choice admits materially different readings, or
+the plan needs information only the user has (expected behavior, priorities,
+constraints not visible in the code), ask via AskUserQuestion before writing
+the affected steps — grouped in one call when the questions are related, not
+one interruption each. A wrong assumption here gets implemented mechanically
+by Codex. With `--auto`, don't ask: make the most reasonable assumption and
+record it under the plan's open questions.
+
+**Fable rubric** — when any of these hold, or when `--high-risk` is set, stop
+and propose escalating the whole loop to Fable:
 
 - real architectural decision (new module boundaries, data model, public API)
 - niche domain or obscure platform knowledge
 - UI/design direction from scratch
 - second failed attempt on the same bug
 
-State the trade-off when proposing: the subagent plan is one-shot, and for
-very large plans a dedicated Fable tab is still better. If the fable model is
-unavailable, say so and continue with the tab model.
+Escalating means Fable becomes the session model, not a subagent: save the
+exploration notes and draft plan gathered so far to the plan file, then tell
+the user to relaunch `/claudex-build` with the same arguments after switching
+this thread to Fable via `/model fable` — or in a fresh Fable thread. The
+relaunched run finds the existing plan file and continues from it. If the
+user declines, keep planning with the current model.
 
 ## Phase 2 — Plan critique (Codex, read-only)
 
@@ -151,8 +168,11 @@ Declare in the report that leg (b) is the same model as the author in a fresh
 session — a grinder, not an independent judge.
 
 With `--high-risk` (or on request): add `/codex:adversarial-review` on the
-diff (challenges design choices) and a read-only Fable subagent scoped to
-architecture and simplification only — bugs were already hunted.
+diff (challenges design choices) and a Fable pass scoped to architecture and
+simplification only — bugs were already hunted. If the session already runs
+on Fable (post-escalation), fold this pass into leg (a) instead of spawning
+a subagent; otherwise use a read-only Fable subagent (Task/Agent with
+`model: fable`; if that model is unavailable, say so and skip the pass).
 
 ## Phase 5 — Triage and fix (Claude decides, fixes are routed)
 
